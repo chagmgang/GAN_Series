@@ -3,23 +3,38 @@ from unet_module import *
 
 class cycleGAN:
     def __init__(self):
-        self.input_A = tf.placeholder(tf.float32, [None, 256, 256, 3], name='input_A')          # self.input_A = X
-        self.input_B = tf.placeholder(tf.float32, [None, 256, 256, 3], name='input_B')          # self.input_B = Y
-
-        self.Generator_A2B, self.Generator_A2B_params = self.GenA2B(self.input_A, False)        # self.Generator_A2B = G(X) -> hat_Y
-        self.Generator_B2A, self.Generator_B2A_params = self.GenB2A(self.input_B, False)        # self.Generator_B2A = F(Y) -> hat_X
+        # GenA2B = Gx->y, GenB2A = Gy->x, DesA = Dx, DesB = Dy, self.input_A = X, self.input_B = Y
+        self.lambda_ = 0.9
         
-        self.Generator_A2B2A, self.Generator_A2B2A_params = self.GenB2A(self.Generator_A2B, True) # self.Generator_A2B2A = F(G(X)) -> hat_hat_X
-        self.Generator_B2A2B, self.Generator_B2A2B_params = self.GenA2B(self.Generator_B2A, True) # self.Generator_B2A2B = G(F(Y)) -> hat_hat_Y
+        self.input_A = tf.placeholder(tf.float32, [None, 256, 256, 3], name='input_A')
+        self.input_B = tf.placeholder(tf.float32, [None, 256, 256, 3], name='input_B')
 
-        self.discriminator_A, self.discriminator_A_params = self.DesA(self.input_A, False)      # self.discriminator_A = Dx(X)
-        self.discriminator_B, self.discriminator_B_params = self.DesB(self.input_B, False)      # self.discriminator_B = Dy(Y) 
+        self._gy, self.Gy = self.GenA2B(self.input_A, reuse=False)              # self._gy = Gx->y(X), self.Gy = parameters of Gx->y
+        self._gx, self.Gx = self.GenB2A(self.input_B, reuse=False)              # self._gx = Gy->x(Y), self.Gx = parameters of Gy->x
 
-        self.discriminator_AB, self.discriminator_AB_params = self.DesA(self.Generator_B2A, True)   # self.discriminator_AB = Dx(F(Y))
-        self.discriminator_BA, self.discriminator_BA_params = self.DesB(self.Generator_A2B, True)   # self.discriminator_BA = Dy(G(X))
+        self._gy_from_gx, self.Gy = self.GenA2B(self._gx, reuse=True)           # self._gy_from_gx = Gx->y(Gy->x(Y))
+        self._gx_from_gy, self.Gx = self.GenB2A(self._gy, reuse=True)           # self._gx_from_gy = Gy->x(Gx->y(X))
 
-        cycle_consisty_loss_A = tf.reduce_mean(tf.abs(self.input_A - self.Generator_A2B2A))     # || X - F(G(X)) || -> 얼마나 X를 재생성해내느냐
-        cycle_consisty_loss_B = tf.reduce_mean(tf.abs(self.input_B - self.Generator_B2A2B))     # || Y - G(F(Y)) || -> 얼마나 Y를 재생성해내느냐
+        self._real_dx, self.Dx = self.DesA(self.input_A, reuse=False)           # self._real_dx = Dx(X), self.Dx = parameters of Dx
+        self._fake_dx, self.Dx = self.DesA(self._gx, reuse=True)                # self._fake_dx = Dx(Gy->x(Y))
+        self._fake_dx_g, self.Dx = self.DesA(self._gx_from_gy, reuse=True)      # self._fake_dx_g = Dx(Gy->x(Gx->y(X)))
+
+        self._real_dy, self.Dy = self.DesB(self.input_B, reuse=False)           # self._real_dy = Dy(Y), self.Dy = parameters of Dy
+        self._fake_dy, self.Dy = self.DesB(self._gy, reuse=True)                # self._fake_dy = Dy(Gx->y(X))
+        self._fake_dy_g, self.Dy = self.DesB(self._gy_from_gx, reuse=True)      # self._fake_dy_g = Dy(Gx->y(Gy->x(Y)))
+
+        cycle_loss = tf.reduce_mean(tf.abs(self._gx_from_gy - self.input_A) + tf.abs(self._gy_from_gx - self.input_B))  # || Gy->x(Gx->y(X)) - X || + || Gx->y(Gy->x(Y)) - Y ||
+        
+        self._gx_loss =  0.5 * tf.reduce_mean(tf.square(self._fake_dx_g - 1.)) + cycle_loss
+        self._gy_loss =  0.5 * tf.reduce_mean(tf.square(self._fake_dy_g - 1.)) + cycle_loss
+
+        self._dx_loss =  0.5 * tf.reduce_mean(tf.square(self._real_dx - 1.)) + 0.5 * tf.reduce_mean(tf.square(self._fake_dx))
+        self._dy_loss =  0.5 * tf.reduce_mean(tf.square(self._real_dy - 1.)) + 0.5 * tf.reduce_mean(tf.square(self._fake_dy))
+
+        self._gx_train_step = tf.train.AdamOptimizer(0.001).minimize(self._gx_loss, var_list=self.Gy)
+        self._gy_train_step = tf.train.AdamOptimizer(0.001).minimize(self._gy_loss, var_list=self.Gx)
+        self._dx_train_step = tf.train.AdamOptimizer(0.001).minimize(self._dx_loss, var_list=self.Dx)
+        self._dy_train_step = tf.train.AdamOptimizer(0.001).minimize(self._dy_loss, var_list=self.Dy)
 
     def GenA2B(self, input, reuse):
         with tf.variable_scope('GenA2B') as scope:
@@ -88,4 +103,3 @@ class cycleGAN:
         return output, params
     
 
-cycle = cycleGAN()
